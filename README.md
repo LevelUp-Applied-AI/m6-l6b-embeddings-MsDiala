@@ -14,8 +14,11 @@ Compare three text representation methods — TF-IDF, GloVe, and DistilBERT — 
 ```bash
 python -m venv .venv
 source .venv/bin/activate   # Windows: .venv\Scripts\activate
+pip install torch --index-url https://download.pytorch.org/whl/cpu
 pip install -r requirements.txt
 ```
+
+DistilBERT runs on PyTorch; we install the CPU wheel explicitly so the download stays small. `requirements.txt` intentionally omits `torch`.
 
 **Note:** The first time you import DistilBERT, the model (~250MB) will be downloaded and cached. This may take a few minutes on slower connections.
 
@@ -44,7 +47,7 @@ Complete all six functions in `embeddings_lab.py`:
 5. Your PR description must include:
    - Comparison table for 5 queries: top-3 similar texts per method
    - Analysis: where methods agree/disagree
-   - Paste your PR URL into TalentLMS → Module 6 → Lab 6B to submit this assignment
+   - Paste your PR URL into TalentLMS → Module 6 Week B → Lab 6B to submit this assignment
 
 Resubmissions are accepted through Saturday of the assignment week.
 

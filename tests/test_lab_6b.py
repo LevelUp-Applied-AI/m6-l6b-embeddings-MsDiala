@@ -94,6 +94,20 @@ def test_text_to_glove_oov():
     assert embedding.shape == (50,), f"Expected shape (50,), got {embedding.shape}"
 
 
+def test_text_to_glove_all_oov():
+    """text_to_glove should return a zero vector when every word is OOV."""
+    glove = load_glove(GLOVE_PATH)
+    assert glove is not None
+    embedding = text_to_glove("xyzzyplugh qwertyuiopasdf zxcvbnmlkjhg", glove)
+    assert embedding is not None, "text_to_glove returned None for all-OOV text"
+    assert isinstance(embedding, np.ndarray), "Must return a numpy array"
+    assert embedding.shape == (50,), f"Expected shape (50,), got {embedding.shape}"
+    assert np.allclose(embedding, 0), (
+        "All-OOV text must return a zero vector of shape (50,); "
+        f"got non-zero values (mean={embedding.mean():.4f})"
+    )
+
+
 # ── BERT ─────────────────────────────────────────────────────────────────
 
 try:
@@ -106,17 +120,35 @@ except ImportError:
 
 @pytest.mark.skipif(not _HAS_TRANSFORMERS, reason="transformers not installed")
 def test_bert_embedding():
-    """extract_bert_embedding should return a 768-d vector."""
+    """extract_bert_embedding should return a 768-d mean-pooled vector."""
     tokenizer = AutoTokenizer.from_pretrained("distilbert-base-uncased")
     model = AutoModel.from_pretrained("distilbert-base-uncased")
     model.eval()
-    embedding = extract_bert_embedding(
-        "Climate change is a global challenge.", tokenizer, model
-    )
+    text = "Climate change is a global challenge."
+    embedding = extract_bert_embedding(text, tokenizer, model)
     assert embedding is not None, "extract_bert_embedding returned None"
     assert isinstance(embedding, np.ndarray), "Must return a numpy array"
     assert embedding.shape == (768,), f"Expected shape (768,), got {embedding.shape}"
     assert not np.allclose(embedding, 0), "BERT embedding should not be all zeros"
+    # Spec (docstring): mean-pool last_hidden_state across the token dimension
+    # with attention-mask handling. Reject CLS-token output (last_hidden_state[:,0,:]).
+    enc = tokenizer(text, return_tensors="pt", padding=True, truncation=True)
+    with torch.no_grad():
+        outputs = model(**enc)
+    last_hidden = outputs.last_hidden_state  # (1, seq, 768)
+    mask = enc["attention_mask"].unsqueeze(-1).float()  # (1, seq, 1)
+    expected_mean = (last_hidden * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1e-9)
+    expected_mean = expected_mean.squeeze(0).numpy()
+    cls_only = last_hidden[:, 0, :].squeeze(0).numpy()
+    assert np.allclose(embedding, expected_mean, atol=1e-4), (
+        "Embedding must be the attention-mask-weighted mean of last_hidden_state "
+        "across the token dimension (spec: mean-pool with attention-mask handling). "
+        "Returning CLS-token output (last_hidden_state[:,0,:]) is not mean pooling."
+    )
+    assert not np.allclose(embedding, cls_only, atol=1e-4), (
+        "Embedding equals the CLS-token vector — spec requires mean pooling, "
+        "not CLS-token extraction."
+    )
 
 
 # ── Comparison ───────────────────────────────────────────────────────────
@@ -143,8 +175,8 @@ def test_compare_similarities():
     )
     assert comparison is not None, "compare_similarities returned None"
     assert isinstance(comparison, dict), "Must return a dict"
-    assert len(comparison) >= len(queries), (
-        f"Expected results for {len(queries)} queries, got {len(comparison)}"
+    assert len(comparison) == len(queries), (
+        f"Expected exactly {len(queries)} query keys, got {len(comparison)}"
     )
     for q in queries:
         assert q in comparison, f"Missing query key: {q[:50]}..."
@@ -152,4 +184,19 @@ def test_compare_similarities():
             assert method in comparison[q], f"Missing method '{method}' for query"
             results = comparison[q][method]
             assert isinstance(results, list), f"{method} results must be a list"
-            assert len(results) >= 3, f"Expected at least 3 results for {method}"
+            assert len(results) == 3, (
+                f"Expected exactly 3 results for {method}, got {len(results)} "
+                "(spec: top-3 most similar texts excluding the query itself)"
+            )
+            # Spec: results must exclude the query itself
+            result_texts = [t for t, _ in results]
+            assert q not in result_texts, (
+                f"{method} results for query must exclude the query itself; "
+                f"query was returned in its own top-3"
+            )
+            # Spec: "top-3 most similar" — results must be sorted by score descending
+            scores = [s for _, s in results]
+            assert scores == sorted(scores, reverse=True), (
+                f"{method} results must be sorted by similarity descending "
+                f"(spec: top-3 most similar); got scores {scores}"
+            )
